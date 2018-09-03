@@ -1,0 +1,5 @@
+# TODO Add my sudo rules here
+# Deploy sudo rules :
+# user host=(users:groups) cmd
+# 
+# deploy ALL=(root) NOPASSWD:NOEXEC: /bin/less /var/log/apache2/access.log

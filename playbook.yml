@@ -1,0 +1,341 @@
+---
+- hosts: all
+  # use sudo as vagrant play command with user vagrant
+  become: yes
+
+  vars:
+    # TODO : change all pass with your own
+    - root:
+        # from passlib.hash import sha512_crypt; print sha512_crypt.using(rounds=5000).hash("changeme")
+        - password: $6$L9Wu4CRKVgLAYetr$MhwbK28GC7AzDs/DFsukTRyfxP3ZiE6eyDR.7qh.A5DxEsm36z9GE.7P/Q21/qP6xeT7xBuDGbdaPvABPwRTC/
+    - users:
+          # from passlib.hash import sha512_crypt; print sha512_crypt.using(rounds=5000).hash("changeme")
+        - username: deploy
+          password: $6$L9Wu4CRKVgLAYetr$MhwbK28GC7AzDs/DFsukTRyfxP3ZiE6eyDR.7qh.A5DxEsm36z9GE.7P/Q21/qP6xeT7xBuDGbdaPvABPwRTC/
+          groups: www-data,backup
+
+    - timezone: 'Europe/Paris'
+    - ip: 192.168.10.10
+
+    - mysql_root_password: changeme
+    - db_name: mydb
+    - db_user: mydb
+    - db_password: changeme
+
+    - ssl:
+      - privatekey_path: /etc/ssl/private/acme-privkey.pem
+        path: /etc/ssl/csr/www.acme.local.csr
+        crt: /etc/ssl/csr/www.acme.local.crt
+        country_name: FR
+        organization_name: acme
+        organizational_unit_name: acme
+        email_address: admin@acme.local
+        common_name: www.acme.local
+
+  handlers:
+    - name: restart apache
+      service: name=apache2 state=restarted
+    - name: restart ssh
+      service: name=ssh state=restarted
+    - name: vm finish
+      command: "echo 'web available at : http://{{ ip }}'"
+
+  tasks:
+    ######################################
+    # Update APT
+    ######################################
+    - name: update apt cache
+      apt: update_cache=yes
+
+    ######################################
+    # Misc. tools
+    ######################################
+    - name: Install usefull system tools
+      apt: name={{ item }} state=present
+      with_items:
+        - vim
+        - htop
+        - git
+        - mailutils
+        - python
+        - python-pip
+        - net-tools
+        - strace
+        - pv
+        - openssl
+        - tmux
+
+    ######################################
+    # User & Group Management
+    # TODO : delete vagrant user for chall release
+    ######################################
+    - group:
+        name: backup
+        state: present
+
+    - name: Update root password
+      user: name=root
+            password={{ item.password }}
+      with_items: '{{root}}'
+
+    - name: Create users
+      user: name={{ item.username }}
+            comment="{{ item.username }} user"
+            shell=/bin/bash
+            password={{ item.password }}
+            groups={{ item.groups }}
+      with_items: '{{users}}'
+
+    - name: Add users to sudoers
+      template: src=src/etc/sudoers.d/{{ item.username }}
+                dest=/etc/sudoers.d/{{ item.username }}-sudoer
+                validate='visudo -cf %s'
+      with_items: '{{users}}'
+
+    ######################################
+    # Time management
+    ######################################
+    - name: Set local timezone
+      copy: content={{ timezone }}
+            dest=/etc/timezone
+
+    - name: Reconfigure tzdata
+      command: dpkg-reconfigure -f noninteractive tzdata
+
+    - name: Install NTP (and update apt cache for the first install)
+      apt: name=ntp state=present
+           update_cache=yes
+
+    - name: Start the ntp service
+      service: name=ntp state=started enabled=true
+
+    ######################################
+    # PHP
+    ######################################
+    - name: Install php 7.0
+      apt: name={{ item }} state=present
+      with_items:
+        - php7.0
+        - php7.0-common
+        - php7.0-curl
+        - php7.0-cli
+
+    ######################################
+    # Python
+    ######################################
+    - name: Install pyopenssl for certificate gen
+      pip:
+        name: pyopenssl
+        state: present
+
+    ######################################
+    # Mariadb install
+    ######################################
+    - name: Install mysql
+      apt: pkg={{ item }} state=installed
+      become: true
+      with_items:
+        - mariadb-server
+        - mariadb-client
+        - python-mysqldb
+        - php7.0-mysql
+
+    - name : Ensure mysql started
+      become: yes
+      service: name=mysql state=started enabled=yes
+
+    - name: Update MySQL root password for all root accounts
+      mysql_user: name=root
+                  host={{ item }}
+                  password={{ mysql_root_password }}
+                  login_user=root
+                  login_password=""
+                  state=present
+      with_items:
+        - 127.0.0.1
+        - ::1
+        - localhost
+
+    ######################################
+    # Apache
+    ######################################
+    - name: Creates csr directory
+      file:
+        path: /etc/ssl/csr
+        state: directory
+
+    - name: Generate an OpenSSL private key
+      openssl_privatekey:
+        path: "{{item.privatekey_path}}"
+      with_items: '{{ssl}}'
+
+    - name: Generate an OpenSSL CSR.
+      openssl_csr:
+        path: "{{ item.path }}"
+        privatekey_path: "{{item.privatekey_path}}"
+        country_name: "{{item.country_name}}"
+        organization_name: "{{item.organization_name}}"
+        organizational_unit_name: "{{item.organizational_unit_name}}"
+        email_address: "{{item.email_address}}"
+        common_name: "{{item.common_name}}"
+      with_items: '{{ssl}}'
+
+    - name: Generate a Self Signed OpenSSL certificate.
+      openssl_certificate:
+        path: "{{ item.crt }}"
+        privatekey_path: "{{item.privatekey_path}}"
+        csr_path: "{{ item.path }}"
+        provider: selfsigned
+      with_items: '{{ssl}}'
+
+    - name: Install Apache
+      apt: name=apache2 state=latest
+
+    - name: Install php apache module
+      apt: name=libapache2-mod-php7.0 state=present
+
+    - name: Change Apache default vhost
+      template:
+        src: templates/etc/apache2/sites-available/000-default.conf
+        dest: /etc/apache2/sites-available/000-default.conf
+        owner: "root"
+        group: "root"
+        force: yes
+        mode: 0644
+      with_items: '{{ssl}}'
+
+    - name: Start Apache service
+      service: name=apache2 state=started enabled=true
+
+    - name: Enable Apache mods
+      command: a2enmod {{ item }}
+      with_items:
+        - headers
+        - ssl
+        - rewrite
+      notify: restart apache
+
+  
+    ######################################
+    # Xdebug (TODO comment for chall release)
+    ######################################
+    - name: install xdebug
+      apt: name=php-xdebug state=present
+      notify: restart apache
+
+    ######################################
+    # PHP configuration
+    ######################################
+    - name: PHP configuration
+      copy:
+        src: templates/etc/php/7.0/apache2/conf.d/myphp.ini
+        dest: /etc/php/7.0/apache2/conf.d/myphp.ini
+        owner: "root"
+        group: "root"
+        mode: 0644
+
+    ######################################
+    # SSH Configuration
+    ######################################
+    - name: ssh configuration allow password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^(#|)PasswordAuthentication'
+        line: 'PasswordAuthentication yes'
+      notify: restart ssh
+
+    - name: ssh configuration permit root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^(#|)PermitRootLogin'
+        line: 'PermitRootLogin yes'
+      notify: restart ssh
+
+    ######################################
+    # Database
+    ######################################
+    - name: Create a new database with name {{ db_name }}
+      mysql_db:
+        name: "{{ db_name }}"
+        state: present
+
+    - name: Create DB user
+      mysql_user: name={{ db_user }}
+                  host={{ item }}
+                  password={{ db_password }}
+                  priv='*.*:SELECT,INSERT,UPDATE,DELETE,CREATE,DROP,REFERENCES,INDEX,ALTER,CREATE TEMPORARY TABLES,LOCK TABLES'
+                  state=present
+      with_items:
+        - 127.0.0.1
+        - ::1
+        - localhost
+
+    - name: create sql src file
+      copy:
+        src: data/acme.sql
+        dest: /root/acme.sql
+        owner: "root"
+        group: "root"
+        mode: 0660
+
+    - name: Import /root/acme.sql
+      mysql_db:
+        state: import
+        name: "{{ db_name }}"
+        target: /root/acme.sql
+
+    - name: delete sql script after import
+      file:
+        path: /root/acme.sql
+        state: absent
+
+    ######################################
+    # Web Source code - you can also comment this and use a mounted shared folder (@see: Vagrantfile)
+    ######################################
+    - name: delete apache folder to recreate it
+      file:
+        path: /var/www/html
+        state: absent
+
+    # /var/www/ : deploy:deploy rwxrwxr-x
+    - name: Copy chall source to /var/www/ with deploy:deploy rwxrwxr-x (www-data not allowed to modify sources)
+      copy:
+        src: src/var/www/
+        dest: /var/www/
+        directory_mode: yes
+        owner: "deploy"
+        group: "deploy"
+        directory_mode: '0755'
+        mode: 0644
+
+    # /logs : deploy:www-data rwxrwxr-x
+    - name: change some folders rights to deploy:www-data rwxrwxr-x (www-data allow to right in this directory
+      file:
+        path: "{{item}}"
+        owner: "deploy"
+        group: "www-data"
+        mode: 0775
+      with_items:
+        - /var/www/html/logs
+
+    ######################################
+    # Crontab
+    ######################################
+    - name: Copy deploy crontab
+      copy:
+        src: src/etc/cron.d/deploy
+        dest: /etc/cron.d/deploy
+        owner: "root"
+        group: "root"
+        mode: 0644
+
+    ######################################
+    # FLAG
+    ######################################
+    - name: create a flag file
+      copy:
+        src: src/.flag.txt
+        dest: /root/.flag.txt
+        owner: "root"
+        group: "root"
+        mode: 0400
