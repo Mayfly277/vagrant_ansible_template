@@ -10,7 +10,7 @@ This template is free to reuse, modify, sell, do whateever you want with it.
  - Install virtualbox
  - Install ansible
 
- - (optionnal) : Install vagrant plugin vbguest (if you want to use shared folders)
+ - (optional) : Install vagrant plugin vbguest (if you want to use shared folders)
 
 ```bash
 # This plugin will install the virtual box guest addition 
