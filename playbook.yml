@@ -132,7 +132,7 @@
     # Mariadb install
     ######################################
     - name: Install mysql
-      apt: pkg={{ item }} state=installed
+      apt: pkg={{ item }} state=present
       become: true
       with_items:
         - mariadb-server
